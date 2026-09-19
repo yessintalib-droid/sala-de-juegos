@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import type { CulturinState, Room, RoomPlayer } from './types.js'
+import type { ChessState, CulturinState, Room, RoomPlayer } from './types.js'
 
 const rooms = new Map<string, Room>()
+
+const CHESS_START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
 const createRoomCode = () => {
   let code = ''
@@ -24,6 +26,19 @@ const createInitialState = (game: Room['game'], firstPlayerId: string): Room['st
       rematch: [],
       stopped: false,
       stoppedBy: null,
+    }
+    return state
+  }
+  if (game === 'chess') {
+    const state: ChessState = {
+      version: 0,
+      phase: 'lobby',
+      fen: CHESS_START_FEN,
+      colors: { [firstPlayerId]: 'w' },
+      ready: [],
+      gameOver: false,
+      resultText: '',
+      rematch: [],
     }
     return state
   }
@@ -54,6 +69,9 @@ export const joinRoom = (code: string, playerName: string) => {
   if (room.game === 'culturin' && (room.state as CulturinState).phase !== 'lobby') {
     return null
   }
+  if (room.game === 'chess' && ((room.state as ChessState).phase !== 'lobby' || room.players.length >= 2)) {
+    return null
+  }
 
   const player: RoomPlayer = {
     id: randomUUID(),
@@ -63,6 +81,9 @@ export const joinRoom = (code: string, playerName: string) => {
   room.players.push(player)
   if (room.game === 'culturin') {
     (room.state as CulturinState).totals[player.id] = 0
+  }
+  if (room.game === 'chess') {
+    (room.state as ChessState).colors[player.id] = 'b'
   }
   return { room, player }
 }

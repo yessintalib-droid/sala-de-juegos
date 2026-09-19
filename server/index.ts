@@ -2,8 +2,9 @@ import { createServer } from 'node:http'
 import { parse } from 'node:url'
 import { randomInt } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
+import { Chess } from 'chess.js'
 import { bumpRoomVersion, createRoom, getRoom, joinRoom, setPlayerConnection } from './store.js'
-import type { ClientAction, CulturinState, GameType, Room, RoomPlayer, ServerEvent } from './types.js'
+import type { ChessState, ClientAction, CulturinState, GameType, Room, RoomPlayer, ServerEvent } from './types.js'
 
 const culturinLetters = ['A', 'C', 'D', 'L', 'M', 'P', 'S', 'T']
 const pickLetter = (excludeLetter?: string) => {
@@ -74,6 +75,71 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
     state.stopped = false
     state.stoppedBy = null
     state.totals = Object.fromEntries(connectedIds.map((id) => [id, 0]))
+  }
+}
+
+const applyChessAction = (room: Room, playerId: string, action: ClientAction) => {
+  const state = room.state as ChessState
+  const connectedIds = connectedIdsOf(room)
+
+  if (action.type === 'ready') {
+    if (state.phase !== 'lobby') return
+    if (!state.ready.includes(playerId)) state.ready.push(playerId)
+    const allReady = room.players.length === 2 && connectedIds.length === 2 && connectedIds.every((id) => state.ready.includes(id))
+    if (!allReady) return
+    state.phase = 'playing'
+    state.fen = new Chess().fen()
+    state.gameOver = false
+    state.resultText = ''
+    state.ready = []
+    return
+  }
+
+  if (action.type === 'chess:move') {
+    if (state.phase !== 'playing' || state.gameOver) return
+    const color = state.colors[playerId]
+    const game = new Chess(state.fen)
+    if (!color || game.turn() !== color) return
+    const payload = action.payload as { from?: string; to?: string; promotion?: string } | undefined
+    if (!payload?.from || !payload.to) return
+    try {
+      game.move({ from: payload.from, to: payload.to, promotion: payload.promotion ?? 'q' })
+    } catch {
+      return
+    }
+    state.fen = game.fen()
+    if (game.isGameOver()) {
+      state.gameOver = true
+      if (game.isCheckmate()) {
+        const winnerColor = color
+        const winnerId = Object.keys(state.colors).find((id) => state.colors[id] === winnerColor) ?? null
+        const winnerName = room.players.find((player) => player.id === winnerId)?.name ?? 'Alguien'
+        state.resultText = `Jaque mate: gana ${winnerName}`
+      } else if (game.isStalemate()) {
+        state.resultText = 'Tablas por ahogado'
+      } else {
+        state.resultText = 'Tablas: partida terminada'
+      }
+    }
+    return
+  }
+
+  if (action.type === 'rematch:vote') {
+    const accept = Boolean((action.payload as { accept?: boolean } | undefined)?.accept)
+    if (!accept) {
+      state.phase = 'exit'
+      return
+    }
+    if (!state.rematch.includes(playerId)) state.rematch.push(playerId)
+    if (!connectedIds.every((id) => state.rematch.includes(id))) return
+    const previousColors = state.colors
+    state.colors = Object.fromEntries(connectedIds.map((id) => [id, previousColors[id] === 'w' ? 'b' : 'w']))
+    state.phase = 'lobby'
+    state.fen = new Chess().fen()
+    state.ready = []
+    state.gameOver = false
+    state.resultText = ''
+    state.rematch = []
   }
 }
 
@@ -189,6 +255,8 @@ websocketServer.on('connection', (socket: WebSocket, _request: import('node:http
       if (!currentRoom) return
       if (currentRoom.game === 'culturin') {
         applyCulturinAction(currentRoom, playerId, action)
+      } else if (currentRoom.game === 'chess') {
+        applyChessAction(currentRoom, playerId, action)
       }
       bumpRoomVersion(currentRoom)
       broadcastRoom(currentRoom)

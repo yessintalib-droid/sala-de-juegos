@@ -42,8 +42,23 @@ type ServerCulturinState = {
 
 type ServerRoom = { code: string; game: string; players: ServerRoomPlayer[]; state: ServerCulturinState }
 
+type ChessPhase = 'lobby' | 'playing' | 'exit'
+
+type ServerChessState = {
+  version: number
+  phase: ChessPhase
+  fen: string
+  colors: Record<string, 'w' | 'b'>
+  ready: string[]
+  gameOver: boolean
+  resultText: string
+  rematch: string[]
+}
+
+type ServerChessRoom = { code: string; game: string; players: ServerRoomPlayer[]; state: ServerChessState }
+
 type ServerEvent =
-  | { type: 'room:state'; room: ServerRoom }
+  | { type: 'room:state'; room: ServerRoom | ServerChessRoom }
   | { type: 'room:error'; message: string }
   | { type: 'action:accepted' }
 
@@ -121,7 +136,7 @@ type CulturinLocalStage = 'countdown' | 'playing' | 'results'
 const chessFiles = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
 const chessPieces: Record<string, string> = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚', P: '♙', N: '♘', B: '♗', R: '♖', Q: '♕', K: '♔' }
 
-type ChessStage = 'mode' | 'code' | 'game'
+type ChessStage = 'mode' | 'code' | 'lobby' | 'game'
 
 type ParchisStage = 'players' | 'mode' | 'code' | 'game'
 
@@ -159,11 +174,49 @@ function ParchisGame({ onBack, playerName }: { onBack: () => void; playerName: s
 function ChessGame({ onBack, playerName }: { onBack: () => void; playerName: string }) {
   const [stage, setStage] = useState<ChessStage>('mode')
   const [mode, setMode] = useState<'bot' | 'player'>('bot')
-  const [roomCode, setRoomCode] = useState('')
   const [joinCode, setJoinCode] = useState('')
+  const [error, setError] = useState('')
+  const [selfId, setSelfId] = useState('')
+  const [room, setRoom] = useState<ServerChessRoom | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const prevPhaseRef = useRef<ChessPhase | null>(null)
+  const [readySent, setReadySent] = useState(false)
+  const [rematchVoted, setRematchVoted] = useState(false)
+
   const [game, setGame] = useState(() => new Chess())
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null)
+  const [legalTargets, setLegalTargets] = useState<string[]>([])
   const [message, setMessage] = useState('Tu turno: juegan las blancas')
+
+  useEffect(() => {
+    if (!room || !selfId) return
+    const socket = new WebSocket(`${SERVER_WS}/ws?room=${room.code}&playerId=${selfId}`)
+    wsRef.current = socket
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string) as ServerEvent
+        if (data.type === 'room:state') setRoom(data.room as ServerChessRoom)
+      } catch { /* mensaje ignorado */ }
+    }
+    return () => socket.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.code, selfId])
+
+  const sendAction = (action: { type: string; payload?: Record<string, unknown> }) => {
+    const socket = wsRef.current
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(action))
+  }
+
+  const phase = room?.state.phase ?? null
+
+  useEffect(() => {
+    if (!phase || phase === prevPhaseRef.current) return
+    if (phase === 'playing') { setStage('game'); setSelectedSquare(null); setLegalTargets([]); setRematchVoted(false) }
+    if (phase === 'lobby') setReadySent(false)
+    if (phase === 'exit') { wsRef.current?.close(); onBack() }
+    prevPhaseRef.current = phase
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase])
 
   const getGameStatus = (currentGame: Chess) => {
     if (currentGame.isCheckmate()) return `Jaque mate: ganan las ${currentGame.turn() === 'w' ? 'negras' : 'blancas'}`
@@ -173,8 +226,44 @@ function ChessGame({ onBack, playerName }: { onBack: () => void; playerName: str
     return `Partida en curso: turno de las ${currentGame.turn() === 'w' ? 'blancas' : 'negras'}`
   }
 
-  const createChessRoom = () => { setMode('player'); setRoomCode(Math.random().toString(36).slice(2, 6).toUpperCase()); setStage('code') }
-  const joinChessRoom = () => { if (joinCode.trim().length === 4) { setMode('player'); setRoomCode(joinCode.trim().toUpperCase()); setStage('game') } }
+  const createChessRoom = async () => {
+    setError('')
+    setMode('player')
+    try {
+      const response = await fetch(`${SERVER_HTTP}/api/rooms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ game: 'chess', name: playerName }),
+      })
+      if (!response.ok) throw new Error()
+      const data = await response.json() as { room: ServerChessRoom; player: ServerRoomPlayer }
+      setSelfId(data.player.id)
+      setRoom(data.room)
+      setStage('code')
+    } catch { setError('No se pudo crear la sala. Comprueba tu conexión.') }
+  }
+
+  const joinChessRoom = async () => {
+    if (joinCode.trim().length < 4) return
+    setError('')
+    setMode('player')
+    try {
+      const response = await fetch(`${SERVER_HTTP}/api/rooms/join`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: joinCode.trim().toUpperCase(), game: 'chess', name: playerName }),
+      })
+      if (!response.ok) throw new Error()
+      const data = await response.json() as { room: ServerChessRoom; player: ServerRoomPlayer }
+      setSelfId(data.player.id)
+      setRoom(data.room)
+      setStage('lobby')
+    } catch { setError('No se pudo unir a esa sala. Comprueba el código.') }
+  }
+
+  const sendReady = () => { setReadySent(true); sendAction({ type: 'ready' }) }
+  const voteRematch = (accept: boolean) => { setRematchVoted(true); sendAction({ type: 'rematch:vote', payload: { accept } }) }
+
   const makeBotMove = (currentGame: Chess) => {
     const moves = currentGame.moves({ verbose: true })
     if (!moves.length) return
@@ -183,34 +272,106 @@ function ChessGame({ onBack, playerName }: { onBack: () => void; playerName: str
     setGame(new Chess(currentGame.fen()))
     setMessage(getGameStatus(currentGame))
   }
+
+  const mySide = mode === 'player' && room && selfId ? room.state.colors[selfId] : null
+  const activeGame = mode === 'player' && room ? new Chess(room.state.fen) : game
+
   const selectSquare = (square: string) => {
-    if (game.isGameOver() || (mode === 'bot' && game.turn() === 'b')) return
+    if (activeGame.isGameOver()) return
+    if (mode === 'bot' && activeGame.turn() === 'b') return
+    if (mode === 'player' && (!room || room.state.phase !== 'playing' || room.state.gameOver || activeGame.turn() !== mySide)) return
+
     if (!selectedSquare) {
-      const piece = game.get(square as never)
-      if (piece && piece.color === game.turn()) setSelectedSquare(square)
+      const piece = activeGame.get(square as never)
+      if (piece && piece.color === activeGame.turn()) {
+        setSelectedSquare(square)
+        setLegalTargets(activeGame.moves({ square: square as never, verbose: true }).map((candidate) => candidate.to))
+      }
       return
     }
+
+    if (square === selectedSquare) { setSelectedSquare(null); setLegalTargets([]); return }
+
+    if (mode === 'player') {
+      if (!legalTargets.includes(square)) {
+        const piece = activeGame.get(square as never)
+        if (piece && piece.color === mySide) {
+          setSelectedSquare(square)
+          setLegalTargets(activeGame.moves({ square: square as never, verbose: true }).map((candidate) => candidate.to))
+        } else { setSelectedSquare(null); setLegalTargets([]) }
+        return
+      }
+      sendAction({ type: 'chess:move', payload: { from: selectedSquare, to: square, promotion: 'q' } })
+      setSelectedSquare(null)
+      setLegalTargets([])
+      return
+    }
+
     try {
       const nextGame = new Chess(game.fen())
       nextGame.move({ from: selectedSquare, to: square, promotion: 'q' })
       setSelectedSquare(null)
+      setLegalTargets([])
       setGame(nextGame)
-      if (nextGame.isGameOver()) { setMessage(getGameStatus(nextGame)) } else if (mode === 'bot') { setMessage('El bot está pensando...'); window.setTimeout(() => makeBotMove(nextGame), 450) } else { setMessage(getGameStatus(nextGame)) }
-    } catch { setSelectedSquare(null) }
+      if (nextGame.isGameOver()) { setMessage(getGameStatus(nextGame)) } else { setMessage('El bot está pensando...'); window.setTimeout(() => makeBotMove(nextGame), 450) }
+    } catch { setSelectedSquare(null); setLegalTargets([]) }
   }
 
-  if (stage !== 'game') return (
+  if (stage === 'mode' || stage === 'code') return (
     <main className="chess-page room-page">
       <header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>AJEDREZ</span><small>/ TABLERO</small></div></header>
       <section className="room-panel chess-room-panel">
-        {stage === 'mode' && <><p className="room-kicker">ELIGE TU PARTIDA</p><h1>¿Contra quién<br /><em>quieres jugar?</em></h1><div className="chess-mode-grid"><button type="button" onClick={() => { setMode('bot'); setStage('game') }}><span>♞</span><strong>Contra el bot</strong><small>Una partida contra el ordenador</small></button><button type="button" onClick={createChessRoom}><span>♟♙</span><strong>Contra otra persona</strong><small>Crea una sala y comparte el código</small></button></div><div className="join-form chess-join"><input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} maxLength={4} placeholder="Código de sala" aria-label="Código de sala" /><button type="button" onClick={joinChessRoom}>Unirse con código</button></div></>}
-        {stage === 'code' && <div className="room-modal-content"><p className="room-kicker">SALA DE AJEDREZ</p><h2>Comparte este código</h2><div className="room-code">{roomCode}</div><p>Comparte el código con la otra persona para empezar.</p><button className="primary-room-button" type="button" onClick={() => setStage('game')}>Continuar</button></div>}
+        {stage === 'mode' && <>
+          <p className="room-kicker">ELIGE TU PARTIDA</p><h1>¿Contra quién<br /><em>quieres jugar?</em></h1>
+          <div className="chess-mode-grid"><button type="button" onClick={() => { setMode('bot'); setStage('game') }}><span>♞</span><strong>Contra el bot</strong><small>Una partida contra el ordenador</small></button><button type="button" onClick={createChessRoom}><span>♟♙</span><strong>Contra otra persona</strong><small>Crea una sala y comparte el código</small></button></div>
+          <div className="join-form chess-join"><input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} maxLength={6} placeholder="Código de sala" aria-label="Código de sala" /><button type="button" onClick={joinChessRoom}>Unirse con código</button></div>
+          {error && <p className="room-error">{error}</p>}
+        </>}
+        {stage === 'code' && room && <div className="room-modal-content"><p className="room-kicker">SALA DE AJEDREZ</p><h2>Comparte este código</h2><div className="room-code">{room.code}</div><p>Comparte el código con la otra persona para que se una.</p><button className="primary-room-button" type="button" onClick={() => setStage('lobby')}>Entrar en la sala</button></div>}
       </section>
     </main>
   )
 
-  const board = game.board()
-  return <main className="chess-page game-chess-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Salir de la partida"><ArrowLeft size={20} /></button><div className="culturin-title"><span>AJEDREZ</span><small>/ {mode === 'bot' ? 'BOT' : roomCode}</small></div><div className="chess-status">{message}</div></header><section className="chess-layout"><div className="chess-board" aria-label="Tablero de ajedrez">{board.map((row, rowIndex) => row.map((piece, columnIndex) => { const square = `${chessFiles[columnIndex]}${8 - rowIndex}`; const isSelected = selectedSquare === square; return <button className={`chess-square ${(rowIndex + columnIndex) % 2 === 0 ? 'light-square' : 'dark-square'} ${isSelected ? 'selected-square' : ''}`} key={square} type="button" onClick={() => selectSquare(square)} aria-label={`Casilla ${square}`}>{piece && <span className={piece.color === 'w' ? 'white-piece' : 'black-piece'}>{chessPieces[piece.color === 'w' ? piece.type.toUpperCase() : piece.type]}</span>}</button> }))}</div><aside className="chess-side-panel"><p className="room-kicker chess-state-label">{game.isGameOver() ? 'PARTIDA TERMINADA' : game.isCheck() ? 'JAQUE' : 'PARTIDA EN CURSO'}</p><h2>{playerName || 'Jugador'}</h2><span className="chess-vs">{mode === 'bot' ? 'contra el bot' : `sala ${roomCode}`}</span><div className="chess-turn">{game.turn() === 'w' ? '♙' : '♟'} {game.turn() === 'w' ? 'Blancas' : 'Negras'}</div><p className="chess-message">{message}</p><button className="secondary-chess-button" type="button" onClick={() => { setGame(new Chess()); setSelectedSquare(null); setMessage('Partida en curso: turno de las blancas') }}>Reiniciar partida</button></aside></section></main>
+  if (stage === 'lobby' && room) {
+    const readyIds = room.state.ready
+    const notReadyCount = room.players.filter((candidate) => candidate.connected && !readyIds.includes(candidate.id)).length
+    return (
+      <main className="culturin-page room-page">
+        <header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>AJEDREZ</span><small>/ TABLERO</small></div></header>
+        <section className="room-panel">
+          <div className="room-modal-content">
+            <p className="room-kicker">SALA {room.code}</p>
+            <h2>Jugadores en la sala</h2>
+            <div className="player-list">
+              {room.players.map((candidate) => (
+                <span key={candidate.id} className={`player-chip ${readyIds.includes(candidate.id) ? 'is-ready' : ''} ${candidate.connected ? '' : 'is-offline'}`}>
+                  <span className="ready-dot" />{candidate.name} ({room.state.colors[candidate.id] === 'w' ? 'blancas' : 'negras'}){candidate.id === selfId && <b>tú</b>}
+                </span>
+              ))}
+            </div>
+            {room.players.length < 2
+              ? <p className="room-intro">Esperando a que se una la otra persona con el código...</p>
+              : readySent
+                ? <p className="waiting-note">{notReadyCount > 0 ? 'Esperando al otro jugador...' : 'Todos listos, empezando...'}</p>
+                : <p className="room-intro">Cuando ambos pulséis Listo, empezará la partida.</p>}
+            <button className="primary-room-button" type="button" onClick={sendReady} disabled={readySent || room.players.length < 2}>{readySent ? 'Esperando...' : 'Listo para jugar'}</button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
+  if (mode === 'player' && room && room.state.gameOver) {
+    const rematchIds = room.state.rematch
+    const notVotedCount = room.players.filter((candidate) => candidate.connected && !rematchIds.includes(candidate.id)).length
+    return <main className="culturin-page winner-page"><p className="room-kicker">FIN DE LA PARTIDA</p><h1>{room.state.resultText}</h1>{rematchVoted ? <p className="waiting-note">{notVotedCount > 0 ? 'Esperando al otro jugador para la revancha...' : 'Todos listos, empezando revancha...'}</p> : <div className="rematch-actions"><button className="primary-room-button" type="button" onClick={() => voteRematch(true)}>Revancha</button><button className="secondary-exit-button" type="button" onClick={() => voteRematch(false)}>Salir</button></div>}</main>
+  }
+
+  const board = activeGame.board()
+  const statusText = mode === 'player' ? getGameStatus(activeGame) : message
+  const turnLabel = activeGame.turn() === 'w' ? 'Blancas' : 'Negras'
+  const roomLabel = mode === 'player' && room ? `sala ${room.code}` : 'contra el bot'
+  return <main className="chess-page game-chess-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Salir de la partida"><ArrowLeft size={20} /></button><div className="culturin-title"><span>AJEDREZ</span><small>/ {mode === 'bot' ? 'BOT' : room?.code}</small></div><div className="chess-status">{statusText}</div></header><section className="chess-layout"><div className="chess-board" aria-label="Tablero de ajedrez">{board.map((row, rowIndex) => row.map((piece, columnIndex) => { const square = `${chessFiles[columnIndex]}${8 - rowIndex}`; const isSelected = selectedSquare === square; const isLegal = legalTargets.includes(square); const isCapture = isLegal && !!piece; return <button className={`chess-square ${(rowIndex + columnIndex) % 2 === 0 ? 'light-square' : 'dark-square'} ${isSelected ? 'selected-square' : ''} ${isLegal ? 'legal-move-square' : ''} ${isCapture ? 'capture-square' : ''}`} key={square} type="button" onClick={() => selectSquare(square)} aria-label={`Casilla ${square}`}>{piece && <span className={piece.color === 'w' ? 'white-piece' : 'black-piece'}>{chessPieces[piece.color === 'w' ? piece.type.toUpperCase() : piece.type]}</span>}</button> }))}</div><aside className="chess-side-panel"><p className="room-kicker chess-state-label">{activeGame.isGameOver() ? 'PARTIDA TERMINADA' : activeGame.isCheck() ? 'JAQUE' : 'PARTIDA EN CURSO'}</p><h2>{playerName || 'Jugador'}</h2><span className="chess-vs">{roomLabel}{mySide && ` · juegas con ${mySide === 'w' ? 'blancas' : 'negras'}`}</span><div className="chess-turn">{activeGame.turn() === 'w' ? '♙' : '♟'} {turnLabel}</div><p className="chess-message">{statusText}</p>{mode === 'bot' && <button className="secondary-chess-button" type="button" onClick={() => { setGame(new Chess()); setSelectedSquare(null); setLegalTargets([]); setMessage('Partida en curso: turno de las blancas') }}>Reiniciar partida</button>}</aside></section></main>
 }
 
 function Culturin({ onBack, playerName }: { onBack: () => void; playerName: string }) {
@@ -240,7 +401,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data as string) as ServerEvent
-        if (data.type === 'room:state') setRoom(data.room)
+        if (data.type === 'room:state') setRoom(data.room as ServerRoom)
       } catch { /* mensaje ignorado */ }
     }
     return () => socket.close()

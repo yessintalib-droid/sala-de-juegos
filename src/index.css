@@ -221,6 +221,9 @@ footer { display: flex; justify-content: space-between; color: #a29a8d; padding-
 .light-square { background: #f2ddbb; }
 .dark-square { background: #9b6549; }
 .selected-square { box-shadow: inset 0 0 0 6px #f4c542; }
+.legal-move-square { position: relative; }
+.legal-move-square::after { content: ''; position: absolute; width: 28%; height: 28%; border-radius: 50%; background: rgba(40, 30, 10, .35); }
+.legal-move-square.capture-square::after { width: 82%; height: 82%; border-radius: 50%; background: transparent; box-shadow: inset 0 0 0 5px rgba(200, 40, 40, .55); }
 .white-piece { color: #fffdf7; text-shadow: 2px 3px 0 #493426, -1px -1px 0 #493426; }
 .black-piece { color: #30251f; text-shadow: 1px 2px 0 rgba(255, 255, 255, .18); }
 .chess-side-panel { min-height: 300px; padding: 27px; border: 1px solid #d7d0c3; border-radius: 10px; background: #fffdf8; box-shadow: 7px 8px 0 #27334b; }

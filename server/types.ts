@@ -1,4 +1,4 @@
-export type GameType = 'monopoly' | 'culturin'
+export type GameType = 'monopoly' | 'culturin' | 'chess'
 
 export type RoomPlayer = {
   id: string
@@ -29,11 +29,25 @@ export type CulturinState = {
   stoppedBy: string | null
 }
 
+export type ChessPhase = 'lobby' | 'playing' | 'exit'
+
+export type ChessState = {
+  version: number
+  phase: ChessPhase
+  fen: string
+  colors: Record<string, 'w' | 'b'>
+  ready: string[]
+  gameOver: boolean
+  resultText: string
+  rematch: string[]
+}
+
 export type ClientAction =
   | { type: 'ready' }
   | { type: 'round:stop' }
   | { type: 'round:submit'; payload: { total: number } }
   | { type: 'rematch:vote'; payload: { accept: boolean } }
+  | { type: 'chess:move'; payload: { from: string; to: string; promotion?: string } }
   | { type: string; payload?: Record<string, unknown> }
 
 export type ServerEvent =
