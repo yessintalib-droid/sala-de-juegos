@@ -89,25 +89,19 @@ Limitación: el nombre vive solo en el navegador/dispositivo actual (no hay cuen
 
 ## 6. Estado de Ajedrez
 
-Ajedrez permite:
+Ajedrez tiene dos modos:
 
-- Jugar contra un bot local.
-- Crear una sala con código para otra persona.
-- Unirse con código.
-- Escribir nombre.
-- Ver un tablero 8x8.
-- Seleccionar piezas y casillas.
-- Validar movimientos legales con `chess.js`.
-- Promocionar automáticamente a dama.
-- Mostrar turno de blancas/negras.
-- Mostrar jaque.
-- Mostrar jaque mate.
-- Mostrar tablas.
-- Reiniciar partida.
+**Contra el bot** (100% local): el bot elige un movimiento legal aleatorio, no es una IA estratégica. Sin servidor.
 
-El bot actual elige un movimiento legal aleatorio. No es una IA estratégica.
+**Contra otra persona con código** (multijugador real, vía `server/`): 
+- Crear sala → código de 6 caracteres → sala de espera con lista de jugadores conectados.
+- Unirse con código (máximo 2 jugadores por sala de ajedrez; el servidor rechaza un tercero o unirse si la partida ya empezó).
+- El creador juega con blancas, quien se une con negras.
+- La partida no empieza hasta que ambos pulsan "Listo para jugar".
+- Los movimientos se validan en el servidor con `chess.js` (evita trampas) y se sincronizan por WebSocket: el movimiento de un dispositivo aparece en el otro en tiempo real.
+- Al terminar (jaque mate/tablas) aparece el resultado con botones de Revancha (si ambos aceptan, se reinicia la partida intercambiando colores) o Salir (si alguien sale, ambos vuelven al dashboard).
 
-Limitación: el modo de código todavía no conecta dos dispositivos. Solo cambia la navegación local.
+En ambos modos: al seleccionar una pieza se resaltan sus casillas de destino legales (`chess.js` ya excluye movimientos que dejarían el propio rey en jaque, así que el rey solo muestra casillas seguras). Promoción automática a dama. Turno de blancas/negras, jaque, jaque mate y tablas visibles.
 
 ## 7. Estado de Parchís
 
