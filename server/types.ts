@@ -14,7 +14,7 @@ export type Room = {
   state: Record<string, unknown>
 }
 
-export type CulturinPhase = 'lobby' | 'playing' | 'summary' | 'winner' | 'exit'
+export type CulturinPhase = 'lobby' | 'playing' | 'winner' | 'exit'
 
 export type CulturinState = {
   version: number
@@ -22,7 +22,7 @@ export type CulturinState = {
   round: number
   letter: string
   ready: string[]
-  roundReported: string[]
+  roundAdvanced: boolean
   totals: Record<string, number>
   rematch: string[]
   stopped: boolean

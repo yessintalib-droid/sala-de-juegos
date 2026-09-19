@@ -25,7 +25,7 @@ function useProfileName() {
 
 type ServerRoomPlayer = { id: string; name: string; connected: boolean }
 
-type CulturinPhase = 'lobby' | 'playing' | 'summary' | 'winner' | 'exit'
+type CulturinPhase = 'lobby' | 'playing' | 'winner' | 'exit'
 
 type ServerCulturinState = {
   version: number
@@ -33,7 +33,7 @@ type ServerCulturinState = {
   round: number
   letter: string
   ready: string[]
-  roundReported: string[]
+  roundAdvanced: boolean
   totals: Record<string, number>
   rematch: string[]
   stopped: boolean
@@ -116,7 +116,7 @@ const culturinCategories = [
 ]
 
 type CulturinUiStage = 'room' | 'code' | 'lobby'
-type CulturinLocalStage = 'countdown' | 'playing' | 'results' | 'waiting-others' | 'summary' | 'winner'
+type CulturinLocalStage = 'countdown' | 'playing' | 'results'
 
 const chessFiles = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
 const chessPieces: Record<string, string> = { p: '♟', n: '♞', b: '♝', r: '♜', q: '♛', k: '♚', P: '♙', N: '♘', B: '♗', R: '♖', Q: '♕', K: '♔' }
@@ -220,7 +220,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   const [selfId, setSelfId] = useState('')
   const [room, setRoom] = useState<ServerRoom | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const prevPhaseRef = useRef<CulturinPhase | null>(null)
+  const roundKeyRef = useRef<string | null>(null)
 
   const [localStage, setLocalStage] = useState<CulturinLocalStage>('countdown')
   const [countdown, setCountdown] = useState(3)
@@ -253,9 +253,14 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   }
 
   const phase = room?.state.phase ?? null
+  const round = room?.state.round ?? null
 
   useEffect(() => {
-    if (!phase || phase === prevPhaseRef.current) return
+    if (!phase) return
+    const key = `${phase}:${round}`
+    if (key === roundKeyRef.current) return
+    if (phase === 'playing' && localStage === 'results') return
+    roundKeyRef.current = key
     if (phase === 'playing') {
       setAnswers(Array(culturinCategories.length).fill(''))
       setFinished(Array(culturinCategories.length).fill(false))
@@ -265,12 +270,11 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
       setCountdown(3)
       setLocalStage('countdown')
     }
-    if (phase === 'lobby' || phase === 'summary') setReadySent(false)
+    if (phase === 'lobby') setReadySent(false)
     if (phase === 'winner') setRematchVoted(false)
     if (phase === 'exit') { wsRef.current?.close(); onBack() }
-    prevPhaseRef.current = phase
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase])
+  }, [phase, round, localStage])
 
   useEffect(() => {
     if (localStage !== 'countdown' || phase !== 'playing') return
@@ -348,7 +352,13 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
     if (!scoreSelected.every(Boolean) || !room) return
     setRoundHistory((current) => [...current, { round: room.state.round, letter: room.state.letter, answers: [...answers], scores: [...scores], total: total + bonus }])
     sendAction({ type: 'round:submit', payload: { total: total + bonus } })
-    setLocalStage('waiting-others')
+    setAnswers(Array(culturinCategories.length).fill(''))
+    setFinished(Array(culturinCategories.length).fill(false))
+    setScores(Array(culturinCategories.length).fill(0))
+    setScoreSelected(Array(culturinCategories.length).fill(false))
+    setFinishedFirst(false)
+    setCountdown(3)
+    setLocalStage('countdown')
   }
 
   const voteRematch = (accept: boolean) => { setRematchVoted(true); sendAction({ type: 'rematch:vote', payload: { accept } }) }
@@ -408,39 +418,6 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   if (phase === 'playing' && localStage === 'results') {
     const letter = room.state.letter
     return <main className="culturin-page results-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>REVISA LAS RESPUESTAS</span><small>/ {playerName}</small></div></header><div className="result-letter">Letra de la ronda <strong>{letter}</strong></div><section className="answer-results answer-table-wrap"><div className="answer-table answer-table-head"><span>CATEGORÍA</span><span>{playerName || 'TÚ'}</span><span>PUNTOS</span></div>{culturinCategories.map((category, index) => <div className="answer-table answer-table-row" key={category.label}><span className="answer-category" style={{ backgroundColor: category.color }}>{category.label}</span><strong>{answers[index] || 'Sin respuesta'}</strong><div className="score-actions"><button className={scoreSelected[index] && scores[index] === 10 ? 'score-active' : ''} onClick={() => setScore(index, 10)}>Único<br /><b>10</b></button><button className={scoreSelected[index] && scores[index] === 5 ? 'score-active' : ''} onClick={() => setScore(index, 5)}>Repetido<br /><b>5</b></button><button className={scoreSelected[index] && scores[index] === 0 ? 'score-active' : ''} onClick={() => setScore(index, 0)}>Fallo<br /><b>0</b></button></div></div>)}</section><button className="continue-button" type="button" onClick={submitRound} disabled={!scoreSelected.every(Boolean)}>Continuar</button></main>
-  }
-
-  if (phase === 'playing' && localStage === 'waiting-others') {
-    const reportedIds = room.state.roundReported
-    const notReportedCount = room.players.filter((candidate) => candidate.connected && !reportedIds.includes(candidate.id)).length
-    return (
-      <main className="culturin-page room-page">
-        <header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>CULTURÍN</span><small>/ {playerName}</small></div></header>
-        <section className="room-panel">
-          <div className="room-modal-content">
-            <p className="room-kicker">RONDA {room.state.round} / 5</p>
-            <h2>Ronda enviada</h2>
-            <div className="player-list">
-              {room.players.map((candidate) => (
-                <span key={candidate.id} className={`player-chip ${reportedIds.includes(candidate.id) ? 'is-ready' : ''} ${candidate.connected ? '' : 'is-offline'}`}>
-                  <span className="ready-dot" />{candidate.name}{candidate.id === selfId && <b>tú</b>}
-                </span>
-              ))}
-            </div>
-            <p className="waiting-note">{notReportedCount > 0 ? `Esperando a ${notReportedCount} jugador${notReportedCount === 1 ? '' : 'es'} más...` : 'Todos listos, calculando...'}</p>
-            <button className="primary-room-button" type="button" disabled>Esperando...</button>
-          </div>
-        </section>
-      </main>
-    )
-  }
-
-  if (phase === 'summary') {
-    const lastRound = roundHistory[roundHistory.length - 1]
-    const rankingRows = room.players.map((candidate) => ({ id: candidate.id, name: candidate.name, points: room.state.totals[candidate.id] ?? 0 })).sort((a, b) => b.points - a.points)
-    const readyIds = room.state.ready
-    const notReadyCount = room.players.filter((candidate) => candidate.connected && !readyIds.includes(candidate.id)).length
-    return <main className="culturin-page results-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>RONDA {room.state.round} / 5</span><small>{playerName}</small></div><div className="result-total">{lastRound?.total ?? 0} puntos</div></header><div className="result-letter">Tus palabras con la letra <strong>{lastRound?.letter}</strong></div><section className="summary-list summary-table-wrap"><div className="summary-table summary-table-head"><span>CATEGORÍA</span><span>{playerName || 'TÚ'}</span><span>PUNTOS</span></div>{culturinCategories.map((category, index) => <div className="summary-table summary-table-row" key={category.label}><span className="answer-category" style={{ backgroundColor: category.color }}>{category.label}</span><strong>{lastRound?.answers[index] || 'Sin respuesta'}</strong><b>{lastRound?.scores[index] ?? 0} pts</b></div>)}</section><section className="player-list">{rankingRows.map((row) => <span key={row.id} className={`player-chip ${row.id === selfId ? 'is-ready' : ''}`}>{row.name}: <b>{row.points}</b></span>)}</section><div className="next-round">{readySent ? <p className="waiting-note">{notReadyCount > 0 ? `Esperando a ${notReadyCount} jugador${notReadyCount === 1 ? '' : 'es'} más...` : 'Todos listos, empezando...'}</p> : <p>Cuando todos hayan revisado sus palabras, pulsa Listo para la siguiente letra.</p>}<button className="finish-button" type="button" onClick={sendReady} disabled={readySent}>{room.state.round >= 5 ? 'Ver ganador' : 'Listo'}</button></div></main>
   }
 
   if (phase === 'winner') {

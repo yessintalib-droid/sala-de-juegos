@@ -19,7 +19,7 @@ const createInitialState = (game: Room['game'], firstPlayerId: string): Room['st
       round: 1,
       letter: '',
       ready: [],
-      roundReported: [],
+      roundAdvanced: false,
       totals: { [firstPlayerId]: 0 },
       rematch: [],
       stopped: false,

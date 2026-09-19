@@ -14,27 +14,17 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
   const connectedIds = connectedIdsOf(room)
 
   if (action.type === 'ready') {
-    if (state.phase !== 'lobby' && state.phase !== 'summary') return
+    if (state.phase !== 'lobby') return
     if (!state.ready.includes(playerId)) state.ready.push(playerId)
     const allReady = connectedIds.length > 0 && connectedIds.every((id) => state.ready.includes(id))
     if (!allReady) return
-    if (state.phase === 'lobby') {
-      state.round = 1
-      state.letter = pickLetter()
-      state.phase = 'playing'
-      state.stopped = false
-      state.stoppedBy = null
-    } else if (state.round >= 5) {
-      state.phase = 'winner'
-    } else {
-      state.round += 1
-      state.letter = pickLetter()
-      state.phase = 'playing'
-      state.stopped = false
-      state.stoppedBy = null
-    }
+    state.round = 1
+    state.letter = pickLetter()
+    state.phase = 'playing'
+    state.stopped = false
+    state.stoppedBy = null
+    state.roundAdvanced = false
     state.ready = []
-    state.roundReported = []
     return
   }
 
@@ -49,8 +39,17 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
     if (state.phase !== 'playing') return
     const total = Number((action.payload as { total?: number } | undefined)?.total ?? 0)
     state.totals[playerId] = (state.totals[playerId] ?? 0) + total
-    if (!state.roundReported.includes(playerId)) state.roundReported.push(playerId)
-    if (connectedIds.every((id) => state.roundReported.includes(id))) state.phase = 'summary'
+    if (state.roundAdvanced) return
+    state.roundAdvanced = true
+    if (state.round >= 5) {
+      state.phase = 'winner'
+    } else {
+      state.round += 1
+      state.letter = pickLetter()
+      state.stopped = false
+      state.stoppedBy = null
+      state.roundAdvanced = false
+    }
     return
   }
 
@@ -66,7 +65,7 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
     state.round = 1
     state.letter = ''
     state.ready = []
-    state.roundReported = []
+    state.roundAdvanced = false
     state.rematch = []
     state.stopped = false
     state.stoppedBy = null
