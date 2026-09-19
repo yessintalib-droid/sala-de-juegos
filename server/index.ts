@@ -1,11 +1,15 @@
 import { createServer } from 'node:http'
 import { parse } from 'node:url'
+import { randomInt } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { bumpRoomVersion, createRoom, getRoom, joinRoom, setPlayerConnection } from './store.js'
 import type { ClientAction, CulturinState, GameType, Room, RoomPlayer, ServerEvent } from './types.js'
 
 const culturinLetters = ['A', 'C', 'D', 'L', 'M', 'P', 'S', 'T']
-const pickLetter = () => culturinLetters[Math.floor(Math.random() * culturinLetters.length)]
+const pickLetter = (excludeLetter?: string) => {
+  const options = excludeLetter ? culturinLetters.filter((letter) => letter !== excludeLetter) : culturinLetters
+  return options[randomInt(options.length)]
+}
 
 const connectedIdsOf = (room: Room) => room.players.filter((player: RoomPlayer) => player.connected).map((player: RoomPlayer) => player.id)
 
@@ -45,7 +49,7 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
       state.phase = 'winner'
     } else {
       state.round += 1
-      state.letter = pickLetter()
+      state.letter = pickLetter(state.letter)
       state.stopped = false
       state.stoppedBy = null
       state.roundAdvanced = false
