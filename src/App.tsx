@@ -36,6 +36,8 @@ type ServerCulturinState = {
   roundReported: string[]
   totals: Record<string, number>
   rematch: string[]
+  stopped: boolean
+  stoppedBy: string | null
 }
 
 type ServerRoom = { code: string; game: string; players: ServerRoomPlayer[]; state: ServerCulturinState }
@@ -227,7 +229,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   const [scores, setScores] = useState<number[]>(Array(culturinCategories.length).fill(0))
   const [scoreSelected, setScoreSelected] = useState<boolean[]>(Array(culturinCategories.length).fill(false))
   const [finishedFirst, setFinishedFirst] = useState(false)
-  const [roundHistory, setRoundHistory] = useState<{ round: number; letter: string; answers: string[]; total: number }[]>([])
+  const [roundHistory, setRoundHistory] = useState<{ round: number; letter: string; answers: string[]; scores: number[]; total: number }[]>([])
   const [readySent, setReadySent] = useState(false)
   const [rematchVoted, setRematchVoted] = useState(false)
 
@@ -277,6 +279,17 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
     return () => window.clearTimeout(timer)
   }, [countdown, localStage, phase])
 
+  const stopped = room?.state.stopped ?? false
+  const prevStoppedRef = useRef(false)
+  useEffect(() => {
+    if (stopped && !prevStoppedRef.current && phase === 'playing' && localStage === 'playing') {
+      setFinishedFirst(false)
+      setLocalStage('results')
+    }
+    prevStoppedRef.current = stopped
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopped, phase])
+
   const createRoom = async () => {
     setError('')
     try {
@@ -323,7 +336,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   }
 
   const canFinish = answers.every((answer, index) => answer.trim() || finished[index])
-  const finishRound = () => { if (canFinish) { setFinishedFirst(true); setLocalStage('results') } }
+  const finishRound = () => { if (canFinish) { setFinishedFirst(true); setLocalStage('results'); sendAction({ type: 'round:stop' }) } }
   const setScore = (index: number, score: number) => {
     setScores((current) => current.map((value, scoreIndex) => scoreIndex === index ? score : value))
     setScoreSelected((current) => current.map((selected, scoreIndex) => scoreIndex === index ? true : selected))
@@ -333,7 +346,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
 
   const submitRound = () => {
     if (!scoreSelected.every(Boolean) || !room) return
-    setRoundHistory((current) => [...current, { round: room.state.round, letter: room.state.letter, answers: [...answers], total: total + bonus }])
+    setRoundHistory((current) => [...current, { round: room.state.round, letter: room.state.letter, answers: [...answers], scores: [...scores], total: total + bonus }])
     sendAction({ type: 'round:submit', payload: { total: total + bonus } })
     setLocalStage('waiting-others')
   }
@@ -398,9 +411,28 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
   }
 
   if (phase === 'playing' && localStage === 'waiting-others') {
-    const reportedCount = room.state.roundReported.length
-    const connectedCount = room.players.filter((candidate) => candidate.connected).length
-    return <main className="culturin-page countdown-page"><p>ESPERANDO</p><strong>{reportedCount}/{connectedCount}</strong><span>Esperando a que todos revisen sus respuestas...</span></main>
+    const reportedIds = room.state.roundReported
+    const notReportedCount = room.players.filter((candidate) => candidate.connected && !reportedIds.includes(candidate.id)).length
+    return (
+      <main className="culturin-page room-page">
+        <header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>CULTURÍN</span><small>/ {playerName}</small></div></header>
+        <section className="room-panel">
+          <div className="room-modal-content">
+            <p className="room-kicker">RONDA {room.state.round} / 5</p>
+            <h2>Ronda enviada</h2>
+            <div className="player-list">
+              {room.players.map((candidate) => (
+                <span key={candidate.id} className={`player-chip ${reportedIds.includes(candidate.id) ? 'is-ready' : ''} ${candidate.connected ? '' : 'is-offline'}`}>
+                  <span className="ready-dot" />{candidate.name}{candidate.id === selfId && <b>tú</b>}
+                </span>
+              ))}
+            </div>
+            <p className="waiting-note">{notReportedCount > 0 ? `Esperando a ${notReportedCount} jugador${notReportedCount === 1 ? '' : 'es'} más...` : 'Todos listos, calculando...'}</p>
+            <button className="primary-room-button" type="button" disabled>Esperando...</button>
+          </div>
+        </section>
+      </main>
+    )
   }
 
   if (phase === 'summary') {
@@ -408,7 +440,7 @@ function Culturin({ onBack, playerName }: { onBack: () => void; playerName: stri
     const rankingRows = room.players.map((candidate) => ({ id: candidate.id, name: candidate.name, points: room.state.totals[candidate.id] ?? 0 })).sort((a, b) => b.points - a.points)
     const readyIds = room.state.ready
     const notReadyCount = room.players.filter((candidate) => candidate.connected && !readyIds.includes(candidate.id)).length
-    return <main className="culturin-page results-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>RONDA {room.state.round} / 5</span><small>{playerName}</small></div><div className="result-total">{lastRound?.total ?? 0} puntos</div></header><div className="result-letter">Tus palabras con la letra <strong>{lastRound?.letter}</strong></div><section className="summary-list summary-table-wrap"><div className="summary-table summary-table-head"><span>CATEGORÍA</span><span>{playerName || 'TÚ'}</span></div>{culturinCategories.map((category, index) => <div className="summary-table summary-table-row" key={category.label}><span className="answer-category" style={{ backgroundColor: category.color }}>{category.label}</span><strong>{lastRound?.answers[index] || 'Sin respuesta'}</strong></div>)}</section><section className="player-list">{rankingRows.map((row) => <span key={row.id} className={`player-chip ${row.id === selfId ? 'is-ready' : ''}`}>{row.name}: <b>{row.points}</b></span>)}</section><div className="next-round">{readySent ? <p className="waiting-note">{notReadyCount > 0 ? `Esperando a ${notReadyCount} jugador${notReadyCount === 1 ? '' : 'es'} más...` : 'Todos listos, empezando...'}</p> : <p>Cuando todos hayan revisado sus palabras, pulsa Listo para la siguiente letra.</p>}<button className="finish-button" type="button" onClick={sendReady} disabled={readySent}>{room.state.round >= 5 ? 'Ver ganador' : 'Listo'}</button></div></main>
+    return <main className="culturin-page results-page"><header className="culturin-header"><button className="back-button" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={20} /></button><div className="culturin-title"><span>RONDA {room.state.round} / 5</span><small>{playerName}</small></div><div className="result-total">{lastRound?.total ?? 0} puntos</div></header><div className="result-letter">Tus palabras con la letra <strong>{lastRound?.letter}</strong></div><section className="summary-list summary-table-wrap"><div className="summary-table summary-table-head"><span>CATEGORÍA</span><span>{playerName || 'TÚ'}</span><span>PUNTOS</span></div>{culturinCategories.map((category, index) => <div className="summary-table summary-table-row" key={category.label}><span className="answer-category" style={{ backgroundColor: category.color }}>{category.label}</span><strong>{lastRound?.answers[index] || 'Sin respuesta'}</strong><b>{lastRound?.scores[index] ?? 0} pts</b></div>)}</section><section className="player-list">{rankingRows.map((row) => <span key={row.id} className={`player-chip ${row.id === selfId ? 'is-ready' : ''}`}>{row.name}: <b>{row.points}</b></span>)}</section><div className="next-round">{readySent ? <p className="waiting-note">{notReadyCount > 0 ? `Esperando a ${notReadyCount} jugador${notReadyCount === 1 ? '' : 'es'} más...` : 'Todos listos, empezando...'}</p> : <p>Cuando todos hayan revisado sus palabras, pulsa Listo para la siguiente letra.</p>}<button className="finish-button" type="button" onClick={sendReady} disabled={readySent}>{room.state.round >= 5 ? 'Ver ganador' : 'Listo'}</button></div></main>
   }
 
   if (phase === 'winner') {

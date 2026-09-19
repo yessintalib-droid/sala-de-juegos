@@ -25,10 +25,13 @@ export type CulturinState = {
   roundReported: string[]
   totals: Record<string, number>
   rematch: string[]
+  stopped: boolean
+  stoppedBy: string | null
 }
 
 export type ClientAction =
   | { type: 'ready' }
+  | { type: 'round:stop' }
   | { type: 'round:submit'; payload: { total: number } }
   | { type: 'rematch:vote'; payload: { accept: boolean } }
   | { type: string; payload?: Record<string, unknown> }

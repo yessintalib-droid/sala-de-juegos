@@ -22,15 +22,26 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
       state.round = 1
       state.letter = pickLetter()
       state.phase = 'playing'
+      state.stopped = false
+      state.stoppedBy = null
     } else if (state.round >= 5) {
       state.phase = 'winner'
     } else {
       state.round += 1
       state.letter = pickLetter()
       state.phase = 'playing'
+      state.stopped = false
+      state.stoppedBy = null
     }
     state.ready = []
     state.roundReported = []
+    return
+  }
+
+  if (action.type === 'round:stop') {
+    if (state.phase !== 'playing' || state.stopped) return
+    state.stopped = true
+    state.stoppedBy = playerId
     return
   }
 
@@ -57,6 +68,8 @@ const applyCulturinAction = (room: Room, playerId: string, action: ClientAction)
     state.ready = []
     state.roundReported = []
     state.rematch = []
+    state.stopped = false
+    state.stoppedBy = null
     state.totals = Object.fromEntries(connectedIds.map((id) => [id, 0]))
   }
 }

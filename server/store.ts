@@ -22,6 +22,8 @@ const createInitialState = (game: Room['game'], firstPlayerId: string): Room['st
       roundReported: [],
       totals: { [firstPlayerId]: 0 },
       rematch: [],
+      stopped: false,
+      stoppedBy: null,
     }
     return state
   }
