@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: sala-de-juegos-web
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: VITE_SERVER_URL
+        fromService:
+          type: web
+          name: sala-de-juegos-server
+          property: host
+
+  - type: web
+    name: sala-de-juegos-server
+    runtime: node
+    buildCommand: npm install && npm run server:build
+    startCommand: node dist-server/index.js
+    envVars:
+      - key: PORT
+        value: 10000
