@@ -138,6 +138,23 @@ Monopoly SVC es el módulo más avanzado y está en `src/Monopoly.tsx`.
 - Selección provisional de fichas numeradas.
 - Dinero inicial provisional: 1.500 €.
 - El modo Express termina después de 30 turnos.
+- Dado: un solo dado de 1 a 4 (no dos dados de 1-6).
+
+### Multijugador real (sala con código)
+
+Igual que Culturín y Ajedrez, Monopoly tiene un modo "Crear sala / Unirse con código" que conecta dispositivos distintos, además del modo local de pasar el dispositivo.
+
+Arquitectura: **host autoritativo**, no lógica de Monopoly en el servidor.
+
+- Quien crea la sala es el "host": su dispositivo ejecuta el motor completo de Monopoly (igual que en modo local), sin cambios en las reglas.
+- Los demás jugadores ("guests") no ejecutan el motor: su pantalla es un espejo del estado que retransmite el host, y sus botones (tirar dado, comprar, pagar, cartas, etc.) en vez de ejecutar la acción localmente, envían un "comando" al host a través del servidor.
+- El servidor (`server/`) no tiene lógica específica de Monopoly: simplemente retransmite cualquier acción a todos los conectados de la sala (mecanismo genérico ya existente `action:accepted`). Todo el estado (jugadores, dinero, casillas, cartas, animaciones, etc.) viaja dentro de esas acciones como `monopoly:state` (del host hacia todos) y `monopoly:command` (de un guest hacia el host).
+- Sala de espera con jugadores conectados y botón Listo; la partida no empieza hasta que haya al menos 2 conectados y todos hayan pulsado Listo. Los tokens se asignan automáticamente por orden de entrada (sin selección manual de ficha en modo sala).
+- Solo el jugador de la ficha activa (o el jugador objetivo de una oferta de propiedad) puede pulsar los botones; en los demás dispositivos aparecen deshabilitados.
+
+Limitaciones conocidas de este primer sync completo:
+- No hay reconexión con recuperación de comandos perdidos si el host cierra la pestaña a mitad de partida (la partida de esa sala se pierde, igual que en Culturín/Ajedrez, todo vive en memoria).
+- No se ha probado exhaustivamente en dispositivos reales; el diseño se verificó por revisión de código y pruebas de servidor, pero conviene vigilar posibles casos límite (desconexión momentánea, doble clic rápido en un botón, etc.).
 
 ### Tablero
 
