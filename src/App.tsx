@@ -2,10 +2,7 @@ import { ArrowLeft, Grid2X2, User } from 'lucide-react'
 import { Chess } from 'chess.js'
 import { useEffect, useRef, useState } from 'react'
 import { Monopoly } from './Monopoly'
-
-const SERVER_HOST = import.meta.env.VITE_SERVER_URL
-const SERVER_HTTP = SERVER_HOST ? `https://${SERVER_HOST}` : 'http://localhost:8787'
-const SERVER_WS = SERVER_HOST ? `wss://${SERVER_HOST}` : 'ws://localhost:8787'
+import { SERVER_HTTP, SERVER_WS } from './server'
 
 const PROFILE_KEY = 'sala-de-juegos-profile-name'
 
@@ -642,7 +639,7 @@ function App() {
   }
 
   if (activeGame === 'Monopoly SVC') {
-    return <Monopoly onBack={() => setActiveGame(null)} />
+    return <Monopoly onBack={() => setActiveGame(null)} playerName={playerName} />
   }
 
   return (

@@ -1,9 +1,18 @@
 ﻿import { ArrowLeft, Dice5, Home, Sparkles, Wallet } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
+import { SERVER_HTTP, SERVER_WS } from './server'
 
-type Stage = 'setup' | 'tokens' | 'game' | 'ranking'
+type Stage = 'entry' | 'room-code' | 'room-lobby' | 'setup' | 'tokens' | 'game' | 'ranking'
 type Mode = 'normal' | 'express' | 'test'
+type MonopolyRole = 'local' | 'host' | 'guest'
+
+type RoomPlayer = { id: string; name: string; connected: boolean }
+type MonopolyRoom = { code: string; game: string; players: RoomPlayer[]; state: { version: number } }
+type MonopolyServerEvent =
+  | { type: 'room:state'; room: MonopolyRoom }
+  | { type: 'room:error'; message: string }
+  | { type: 'action:accepted'; action: { type: string; payload?: Record<string, unknown> }; playerId: string }
 
 type Player = {
   id: number
@@ -272,8 +281,18 @@ const tokenCenters = [
 ]
 const startAnimationPosition = 0
 
-function Monopoly({ onBack }: { onBack: () => void }) {
-  const [stage, setStage] = useState<Stage>('setup')
+function Monopoly({ onBack, playerName }: { onBack: () => void; playerName: string }) {
+  const [stage, setStage] = useState<Stage>('entry')
+  const [role, setRole] = useState<MonopolyRole>('local')
+  const [joinCode, setJoinCode] = useState('')
+  const [error, setError] = useState('')
+  const [selfId, setSelfId] = useState('')
+  const [room, setRoom] = useState<MonopolyRoom | null>(null)
+  const [readyIds, setReadyIds] = useState<string[]>([])
+  const [playerIdMap, setPlayerIdMap] = useState<Record<string, number>>({})
+  const wsRef = useRef<WebSocket | null>(null)
+  const lastSnapshotRef = useRef<string>('')
+  const gameStartedRef = useRef(false)
   const [mode, setMode] = useState<Mode>('normal')
   const [playerCount, setPlayerCount] = useState(2)
   const [players, setPlayers] = useState<Player[]>(initialPlayers(2))
@@ -560,7 +579,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
   }
 
   useEffect(() => {
-    if (!movement) return
+    if (role === 'guest' || !movement) return
 
     if (movement.index >= movement.path.length - 1) {
       const finalPosition = movement.path[movement.path.length - 1]
@@ -595,7 +614,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
   }, [movement, players])
 
   useEffect(() => {
-    if (!luckAnimation) return
+    if (role === 'guest' || !luckAnimation) return
 
     const timer = window.setTimeout(() => {
       setLuckCard(luckAnimation.card)
@@ -606,14 +625,14 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
   }, [luckAnimation])
 
   useEffect(() => {
-    if (!moneyEffect) return
+    if (role === 'guest' || !moneyEffect) return
 
     const timer = window.setTimeout(() => setMoneyEffect(null), 3700)
     return () => window.clearTimeout(timer)
   }, [moneyEffect])
 
   useEffect(() => {
-    if (stage !== 'game' || !current.jailed || movement || moneyPrompt || pendingProperty || luckCard) return
+    if (role === 'guest' || stage !== 'game' || !current.jailed || movement || moneyPrompt || pendingProperty || luckCard) return
 
     const timer = window.setTimeout(() => {
       const skippedTurns = jailTurns[current.id] ?? 0
@@ -634,7 +653,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
   }, [stage, current.id, current.jailed, jailTurns, movement, moneyPrompt, pendingProperty, luckCard])
 
   useEffect(() => {
-    if (stage !== 'game' || !current.bankrupt || movement || moneyPrompt || pendingProperty || luckCard) return
+    if (role === 'guest' || stage !== 'game' || !current.bankrupt || movement || moneyPrompt || pendingProperty || luckCard) return
 
     const timer = window.setTimeout(() => {
       setNotice(`Jugador ${current.token + 1} está eliminado por quiebra.`)
@@ -716,7 +735,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
 
     const rolledDice = mode === 'test'
       ? [testDiceValue]
-      : [Math.floor(Math.random() * 6) + 1, Math.floor(Math.random() * 6) + 1]
+      : [Math.floor(Math.random() * 4) + 1]
     const result = rolledDice.reduce((total, value) => total + value, 0)
     const path = Array.from({ length: result + 1 }, (_, index) => (current.position + index) % spaces.length)
 
@@ -954,6 +973,175 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
     nextTurn()
   }
 
+  const sendAction = (action: { type: string; payload?: Record<string, unknown> }) => {
+    const socket = wsRef.current
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(action))
+  }
+
+  const selfPlayerId = role === 'local' ? null : playerIdMap[selfId] ?? null
+  const isMyTurn = role === 'local' || (current && selfPlayerId !== null && current.id === selfPlayerId)
+
+  const snapshotState = () => ({
+    stage,
+    mode,
+    players,
+    currentPlayer,
+    dice,
+    notice,
+    pendingProperty,
+    luckCard,
+    turns,
+    movement,
+    luckAnimation,
+    moneyEffect,
+    bankCash,
+    moneyPrompt,
+    propertyDetails,
+    managedProperty,
+    propertyOffer,
+    lotteryPosition,
+    lotteryTicketBought,
+    lotteryRoll,
+    moneyMovements,
+    jailTurns,
+    extraTurn,
+    playerIdMap,
+  })
+
+  const applySnapshot = (snapshot: Record<string, unknown>) => {
+    if (typeof snapshot.stage === 'string') setStage(snapshot.stage as Stage)
+    if (typeof snapshot.mode === 'string') setMode(snapshot.mode as Mode)
+    if (Array.isArray(snapshot.players)) setPlayers(snapshot.players as Player[])
+    if (typeof snapshot.currentPlayer === 'number') setCurrentPlayer(snapshot.currentPlayer)
+    if (Array.isArray(snapshot.dice)) setDice(snapshot.dice as number[])
+    if (typeof snapshot.notice === 'string') setNotice(snapshot.notice)
+    setPendingProperty((snapshot.pendingProperty ?? null) as Space | null)
+    setLuckCard((snapshot.luckCard ?? null) as LuckCard | null)
+    if (typeof snapshot.turns === 'number') setTurns(snapshot.turns)
+    setMovement((snapshot.movement ?? null) as { playerId: number; path: number[]; index: number } | null)
+    setLuckAnimation((snapshot.luckAnimation ?? null) as LuckAnimation | null)
+    setMoneyEffect((snapshot.moneyEffect ?? null) as MoneyEffect | null)
+    if (typeof snapshot.bankCash === 'number') setBankCash(snapshot.bankCash)
+    setMoneyPrompt((snapshot.moneyPrompt ?? null) as MoneyPrompt | null)
+    if (snapshot.propertyDetails && typeof snapshot.propertyDetails === 'object') setPropertyDetails(snapshot.propertyDetails as Record<string, PropertyDetails>)
+    setManagedProperty((snapshot.managedProperty ?? null) as string | null)
+    setPropertyOffer((snapshot.propertyOffer ?? null) as PropertyOffer | null)
+    setLotteryPosition((snapshot.lotteryPosition ?? null) as number | null)
+    if (typeof snapshot.lotteryTicketBought === 'boolean') setLotteryTicketBought(snapshot.lotteryTicketBought)
+    setLotteryRoll((snapshot.lotteryRoll ?? null) as number | null)
+    if (snapshot.moneyMovements && typeof snapshot.moneyMovements === 'object') setMoneyMovements(snapshot.moneyMovements as Record<number, MoneyMovement[]>)
+    if (snapshot.jailTurns && typeof snapshot.jailTurns === 'object') setJailTurns(snapshot.jailTurns as Record<number, number>)
+    if (typeof snapshot.extraTurn === 'boolean') setExtraTurn(snapshot.extraTurn)
+    if (snapshot.playerIdMap && typeof snapshot.playerIdMap === 'object') setPlayerIdMap(snapshot.playerIdMap as Record<string, number>)
+  }
+
+  const hostCommands: Record<string, () => void> = {
+    rollDice, finishTurn, buyProperty, declineProperty, confirmMoney,
+    buyLotteryTicket, rollLottery, closeLottery, buyHouse, buyHotel,
+    createPropertyOffer, mortgageProperty, acceptPropertyOffer, rejectPropertyOffer, handleLuck,
+  }
+
+  const runOrSend = (name: string, fn: () => void) => {
+    if (role === 'guest') { sendAction({ type: 'monopoly:command', payload: { name } }); return }
+    fn()
+  }
+
+  const hostCommandsRef = useRef(hostCommands)
+  hostCommandsRef.current = hostCommands
+  const applySnapshotRef = useRef(applySnapshot)
+  applySnapshotRef.current = applySnapshot
+
+  useEffect(() => {
+    if (role === 'local' || !room || !selfId) return
+    const socket = new WebSocket(`${SERVER_WS}/ws?room=${room.code}&playerId=${selfId}`)
+    wsRef.current = socket
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string) as MonopolyServerEvent
+        if (data.type === 'room:state') { setRoom(data.room); return }
+        if (data.type !== 'action:accepted') return
+        const { action } = data
+        if (action.type === 'lobby:ready') {
+          const pid = (action.payload as { playerId?: string } | undefined)?.playerId
+          if (pid) setReadyIds((current) => current.includes(pid) ? current : [...current, pid])
+          return
+        }
+        if (action.type === 'monopoly:state' && role === 'guest') {
+          applySnapshotRef.current(action.payload as Record<string, unknown>)
+          return
+        }
+        if (action.type === 'monopoly:command' && role === 'host') {
+          const name = (action.payload as { name?: string } | undefined)?.name
+          if (name) hostCommandsRef.current[name]?.()
+        }
+      } catch { /* mensaje ignorado */ }
+    }
+    return () => socket.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room?.code, selfId, role])
+
+  useEffect(() => {
+    if (role !== 'host' || stage !== 'room-lobby' || gameStartedRef.current) return
+    const connectedIds = (room?.players ?? []).filter((player) => player.connected).map((player) => player.id)
+    if (connectedIds.length < 2 || !connectedIds.every((id) => readyIds.includes(id))) return
+    gameStartedRef.current = true
+    const map = Object.fromEntries(connectedIds.map((id, index) => [id, index]))
+    setPlayerIdMap(map)
+    setPlayers(initialPlayers(connectedIds.length).map((player, index) => ({ ...player, name: room?.players[index]?.name ?? player.name })))
+    setCurrentPlayer(0)
+    setStage('game')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, stage, room, readyIds])
+
+  useEffect(() => {
+    if (role !== 'host' || stage !== 'game') return
+    const snapshot = JSON.stringify(snapshotState())
+    if (snapshot === lastSnapshotRef.current) return
+    lastSnapshotRef.current = snapshot
+    sendAction({ type: 'monopoly:state', payload: snapshotState() })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  })
+
+  const createMonopolyRoom = async () => {
+    setError('')
+    try {
+      const response = await fetch(`${SERVER_HTTP}/api/rooms`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ game: 'monopoly', name: playerName }),
+      })
+      if (!response.ok) throw new Error()
+      const data = await response.json() as { room: MonopolyRoom; player: RoomPlayer }
+      setRole('host')
+      setSelfId(data.player.id)
+      setRoom(data.room)
+      setStage('room-code')
+    } catch { setError('No se pudo crear la sala. Comprueba tu conexión.') }
+  }
+
+  const joinMonopolyRoom = async () => {
+    if (joinCode.trim().length < 4) return
+    setError('')
+    try {
+      const response = await fetch(`${SERVER_HTTP}/api/rooms/join`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: joinCode.trim().toUpperCase(), game: 'monopoly', name: playerName }),
+      })
+      if (!response.ok) throw new Error()
+      const data = await response.json() as { room: MonopolyRoom; player: RoomPlayer }
+      setRole('guest')
+      setSelfId(data.player.id)
+      setRoom(data.room)
+      setStage('room-lobby')
+    } catch { setError('No se pudo unir a esa sala. Comprueba el código.') }
+  }
+
+  const sendReady = () => {
+    setReadyIds((current) => current.includes(selfId) ? current : [...current, selfId])
+    sendAction({ type: 'lobby:ready', payload: { playerId: selfId } })
+  }
+
   const visibleBoard = spaces.map((space, index) => ({ ...space, index, rect: logicalBoardRects[index] ?? logicalBoardRects[0] }))
 
   const getTokenPosition = (player: Player) => {
@@ -962,6 +1150,62 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
     }
 
     return movement.path[Math.min(movement.index, movement.path.length - 1)] ?? player.position
+  }
+
+  if (stage === 'entry') {
+    return (
+      <main className="monopoly-page room-page">
+        <header className="monopoly-header"><button className="monopoly-back" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={19} /></button><span>MONOPOLY SVC</span></header>
+        <section className="room-panel">
+          <p className="room-kicker">NUEVA PARTIDA</p><h1>¿Cómo quieres<br /><em>jugar?</em></h1>
+          <div className="chess-mode-grid">
+            <button type="button" onClick={() => { setRole('local'); setStage('setup') }}><span>📱</span><strong>En este dispositivo</strong><small>Pasad el turno en la misma pantalla</small></button>
+            <button type="button" onClick={createMonopolyRoom}><span>👥</span><strong>Crear sala</strong><small>Cada jugador desde su propio móvil</small></button>
+          </div>
+          <div className="join-form chess-join"><input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} maxLength={6} placeholder="Código de sala" aria-label="Código de sala" /><button type="button" onClick={joinMonopolyRoom}>Unirse con código</button></div>
+          {error && <p className="room-error">{error}</p>}
+        </section>
+      </main>
+    )
+  }
+
+  if (stage === 'room-code' && room) {
+    return (
+      <main className="monopoly-page room-page">
+        <header className="monopoly-header"><button className="monopoly-back" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={19} /></button><span>MONOPOLY SVC</span></header>
+        <section className="room-panel"><div className="room-modal-content"><p className="room-kicker">SALA CREADA</p><h2>Comparte este código</h2><div className="room-code">{room.code}</div><p>Cuando todos se hayan unido, entra en la sala de espera.</p><button className="primary-room-button" type="button" onClick={() => setStage('room-lobby')}>Entrar en la sala</button></div></section>
+      </main>
+    )
+  }
+
+  if (stage === 'room-lobby' && room) {
+    const connectedPlayers = room.players.filter((player) => player.connected)
+    const notReadyCount = connectedPlayers.filter((player) => !readyIds.includes(player.id)).length
+    const selfReady = readyIds.includes(selfId)
+    return (
+      <main className="monopoly-page room-page">
+        <header className="monopoly-header"><button className="monopoly-back" type="button" onClick={onBack} aria-label="Volver"><ArrowLeft size={19} /></button><span>MONOPOLY SVC</span></header>
+        <section className="room-panel">
+          <div className="room-modal-content">
+            <p className="room-kicker">SALA {room.code}</p>
+            <h2>Jugadores en la sala</h2>
+            <div className="player-list">
+              {room.players.map((player) => (
+                <span key={player.id} className={`player-chip ${readyIds.includes(player.id) ? 'is-ready' : ''} ${player.connected ? '' : 'is-offline'}`}>
+                  <span className="ready-dot" />{player.name}{player.id === selfId && <b>tú</b>}
+                </span>
+              ))}
+            </div>
+            {connectedPlayers.length < 2
+              ? <p className="room-intro">Esperando a que se unan más jugadores (mínimo 2)...</p>
+              : selfReady
+                ? <p className="waiting-note">{notReadyCount > 0 ? `Esperando a ${notReadyCount} jugador${notReadyCount === 1 ? '' : 'es'} más...` : 'Todos listos, empezando...'}</p>
+                : <p className="room-intro">Cuando todos pulséis Listo, empezará la partida.</p>}
+            <button className="primary-room-button" type="button" onClick={sendReady} disabled={selfReady || connectedPlayers.length < 2}>{selfReady ? 'Esperando...' : 'Listo para jugar'}</button>
+          </div>
+        </section>
+      </main>
+    )
   }
 
   if (stage === 'setup' || stage === 'tokens') {
@@ -1017,7 +1261,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
                 <label className="test-dice-picker">
                   Avance del dado de prueba
                   <select value={testDiceValue} onChange={(event) => setTestDiceValue(Number(event.target.value))}>
-                    {[1, 2, 3, 4, 5, 6].map((value) => <option key={value} value={value}>{value} casilla{value === 1 ? '' : 's'}</option>)}
+                    {[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value} casilla{value === 1 ? '' : 's'}</option>)}
                   </select>
                 </label>
               )}
@@ -1260,8 +1504,8 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
                 <button
                   className="dice-button"
                   type="button"
-                  onClick={rollDice}
-                  disabled={Boolean(dice.length || pendingProperty || moneyPrompt || managedProperty || propertyOffer || luckCard || movement)}
+                  onClick={() => runOrSend('rollDice', rollDice)}
+                  disabled={Boolean(dice.length || pendingProperty || moneyPrompt || managedProperty || propertyOffer || luckCard || movement) || !isMyTurn}
                 >
                   <Dice5 size={22} />
                   Tirar dados {dice.length > 0 && <b>{dice.join(' + ')}</b>}
@@ -1295,7 +1539,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
             )}
           </details>
 
-          <button className="finish-monopoly-turn" type="button" onClick={finishTurn} disabled={current.jailed || !dice.length || Boolean(movement || pendingProperty || moneyPrompt || luckCard)}>
+          <button className="finish-monopoly-turn" type="button" onClick={() => runOrSend('finishTurn', finishTurn)} disabled={current.jailed || !dice.length || Boolean(movement || pendingProperty || moneyPrompt || luckCard) || !isMyTurn}>
             Terminar turno
           </button>
         </aside>
@@ -1309,10 +1553,10 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
             <strong>{pendingProperty.price} €</strong>
             <p>¿Quieres comprar esta propiedad antes de seguir con el turno?</p>
             <div>
-              <button type="button" onClick={buyProperty}>
+              <button type="button" onClick={() => runOrSend('buyProperty', buyProperty)} disabled={!isMyTurn}>
                 Comprar
               </button>
-              <button type="button" onClick={declineProperty}>
+              <button type="button" onClick={() => runOrSend('declineProperty', declineProperty)} disabled={!isMyTurn}>
                 No comprar
               </button>
             </div>
@@ -1327,7 +1571,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
             <h2>{moneyPrompt.title}</h2>
             <strong>{moneyPrompt.amount} €</strong>
             <p>{moneyPrompt.description}</p>
-            <button type="button" onClick={confirmMoney}>{moneyPrompt.button}</button>
+            <button type="button" onClick={() => runOrSend('confirmMoney', confirmMoney)} disabled={!isMyTurn}>{moneyPrompt.button}</button>
           </div>
         </div>
       )}
@@ -1341,16 +1585,16 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
               <>
                 <strong>20 €</strong>
                 <p>Compra un billete y tira un dado. Si sacas un 6, recibes 100 € del banco.</p>
-                <button type="button" onClick={buyLotteryTicket} disabled={current.money < 20}>Comprar billete · 20 €</button>
+                <button type="button" onClick={() => runOrSend('buyLotteryTicket', buyLotteryTicket)} disabled={current.money < 20 || !isMyTurn}>Comprar billete · 20 €</button>
               </>
             ) : (
               <>
                 <p>Tu billete está comprado. Tira el dado.</p>
                 <strong>{lotteryRoll ?? '?'}</strong>
-                {!lotteryRoll && <button type="button" onClick={rollLottery}>Tirar dado</button>}
+                {!lotteryRoll && <button type="button" onClick={() => runOrSend('rollLottery', rollLottery)} disabled={!isMyTurn}>Tirar dado</button>}
                 {lotteryRoll === 6 && <p>¡Has sacado un 6! Cobras 100 €.</p>}
                 {lotteryRoll !== null && lotteryRoll !== 6 && <p>No ha salido un 6. El billete no tiene premio.</p>}
-                {lotteryRoll !== null && <button type="button" className="secondary-action" onClick={closeLottery}>Cerrar</button>}
+                {lotteryRoll !== null && <button type="button" className="secondary-action" onClick={() => runOrSend('closeLottery', closeLottery)} disabled={!isMyTurn}>Cerrar</button>}
               </>
             )}
           </div>
@@ -1374,8 +1618,8 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
               </p>
             )}
             <div className="property-actions">
-              <button type="button" disabled={getPropertyDetails(managedProperty).houses >= 4 || getPropertyDetails(managedProperty).hotel || getPropertyDetails(managedProperty).mortgaged || !ownsCompleteGroup(managedProperty, current) || current.money < getBuildCost(managedProperty)} onClick={buyHouse}>Comprar casa · {getBuildCost(managedProperty)} €</button>
-              <button type="button" disabled={getPropertyDetails(managedProperty).houses < 4 || getPropertyDetails(managedProperty).hotel || getPropertyDetails(managedProperty).mortgaged || !ownsCompleteGroup(managedProperty, current) || current.money < getHotelCost(managedProperty)} onClick={buyHotel}>Comprar hotel · {getHotelCost(managedProperty)} €</button>
+              <button type="button" disabled={getPropertyDetails(managedProperty).houses >= 4 || getPropertyDetails(managedProperty).hotel || getPropertyDetails(managedProperty).mortgaged || !ownsCompleteGroup(managedProperty, current) || current.money < getBuildCost(managedProperty) || !isMyTurn} onClick={() => runOrSend('buyHouse', buyHouse)}>Comprar casa · {getBuildCost(managedProperty)} €</button>
+              <button type="button" disabled={getPropertyDetails(managedProperty).houses < 4 || getPropertyDetails(managedProperty).hotel || getPropertyDetails(managedProperty).mortgaged || !ownsCompleteGroup(managedProperty, current) || current.money < getHotelCost(managedProperty) || !isMyTurn} onClick={() => runOrSend('buyHotel', buyHotel)}>Comprar hotel · {getHotelCost(managedProperty)} €</button>
               <label>Vender a jugador
                 <select value={offerTargetId ?? ''} onChange={(event) => setOfferTargetId(event.target.value ? Number(event.target.value) : null)}>
                   <option value="">Seleccionar jugador</option>
@@ -1385,8 +1629,8 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
               <label>Precio de venta (€)
                 <input type="number" min="1" value={offerPrice} onChange={(event) => setOfferPrice(event.target.value)} placeholder="Ej. 150" />
               </label>
-              <button type="button" disabled={offerTargetId === null || !offerPrice || Number(offerPrice) <= 0} onClick={createPropertyOffer}>Enviar oferta de venta</button>
-              <button type="button" disabled={getPropertyDetails(managedProperty).mortgaged} onClick={mortgageProperty}>Hipotecar propiedad</button>
+              <button type="button" disabled={offerTargetId === null || !offerPrice || Number(offerPrice) <= 0 || !isMyTurn} onClick={() => runOrSend('createPropertyOffer', createPropertyOffer)}>Enviar oferta de venta</button>
+              <button type="button" disabled={getPropertyDetails(managedProperty).mortgaged || !isMyTurn} onClick={() => runOrSend('mortgageProperty', mortgageProperty)}>Hipotecar propiedad</button>
               <button type="button" className="secondary-action" onClick={() => setManagedProperty(null)}>Cerrar</button>
             </div>
           </div>
@@ -1402,8 +1646,8 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
             <p>Precio de venta</p>
             <strong>{propertyOffer.price} €</strong>
             <div>
-              <button type="button" onClick={acceptPropertyOffer} disabled={(players.find((player) => player.id === propertyOffer.buyerId)?.money ?? 0) < propertyOffer.price}>Comprar</button>
-              <button type="button" className="secondary-action" onClick={rejectPropertyOffer}>Rechazar</button>
+              <button type="button" onClick={() => runOrSend('acceptPropertyOffer', acceptPropertyOffer)} disabled={(players.find((player) => player.id === propertyOffer.buyerId)?.money ?? 0) < propertyOffer.price || (role !== 'local' && selfPlayerId !== propertyOffer.buyerId)}>Comprar</button>
+              <button type="button" className="secondary-action" onClick={() => runOrSend('rejectPropertyOffer', rejectPropertyOffer)} disabled={role !== 'local' && selfPlayerId !== propertyOffer.buyerId}>Rechazar</button>
             </div>
           </div>
         </div>
@@ -1440,7 +1684,7 @@ const getHotelCost = (property: string) => getEconomyGroup(property)?.hotelCost 
             <p className="room-kicker">CARTA DE SUERTE</p>
             <h2>{luckCard.title}</h2>
             <p>{luckCard.text}</p>
-            <button type="button" onClick={handleLuck}>
+            <button type="button" onClick={() => runOrSend('handleLuck', handleLuck)} disabled={!isMyTurn}>
               Aceptar
             </button>
           </div>
